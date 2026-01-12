@@ -82,7 +82,7 @@ class TrajectoryProcessor:
         df["speed"] = df["dist"] / df["dt"]
         
         # 6. 对数变换 (用于 HMM，增加数值稳定性)
-        # speed + 0.1 避免 log(0)
-        df["log_speed"] = np.log(df["speed"] + 0.1)
+        # speed + 1e-3 避免 log(0)
+        df["log_speed"] = np.log(df["speed"] + 1e-3)
         
         return df.dropna()
