@@ -1,0 +1,13 @@
+“Due to the absence of a clear bimodal structure in speed distribution,
+we adopted a conservative threshold (2.5 m/s) to define flight behavior,
+prioritizing label precision over recall.”
+
+“We adopted a temporal split strategy to evaluate the model’s ability
+to predict future behavioral states from past observations,
+avoiding information leakage in time-series data.”
+
+本项目使用 Movebank 海鸟 GPS 轨迹数据进行行为二分类（flying vs resting）。我们采用个体内时间切分（70/30）以评估模型从过去预测未来的能力并避免时间泄漏。行为标签为伪标签：当相邻点速度 v=\text{dist}/\text{dt}\ge 2.5\,\text{m/s} 时标记为 flying。
+基线模型（Logistic Regression）在测试集上取得很高的 AUC。为解释这一结果，我们进行了两项 sanity check：绘制 \text{dist}–\text{dt} 散点图并叠加阈值线 \text{dist}=2.5\text{dt}，以及分别使用单一特征训练模型。结果显示仅用 \text{dist} 即可获得 AUC≈0.97，而仅用 \text{dt} 接近随机（AUC≈0.53），说明高性能主要来自位移与阈值标签之间的强一致性。该基线验证了处理流程与时间外推评估的正确性，但也提示需引入更高层次的行为定义以避免“阈值规则复现”。
+
+
+我们使用 2 状态高斯 HMM 对轨迹速度序列进行隐状态建模（不依赖阈值标签训练）。模型学习到两个清晰分离的状态：低速状态的 \log(v) 均值约为 -2.32（对应 v\approx 0.10\,\mathrm{m/s}），高速状态均值约为 2.54（对应 v\approx 12.7\,\mathrm{m/s}），可自然解释为 resting 与 flight。转移矩阵显示 resting 状态具有很强持续性（P(r\to r)\approx 0.984），flight 状态也具有持续性但更易回落（P(f\to f)\approx 0.885），符合行为直觉。与基于阈值的伪标签对齐作为 sanity check，flight 召回率达到 0.93，说明 HMM 在不显式使用阈值规则进行训练的情况下，仍能恢复与高速行为一致的状态序列，并提供可解释的状态转移动力学。
