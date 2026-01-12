@@ -19,71 +19,70 @@ class TrajectoryProcessor:
         c = 2 * np.arcsin(np.sqrt(a))
         return self.R * c
 
-    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
-        """执行完整的数据清洗管道"""
+    def resample_tracks(self, df: pd.DataFrame, time_step: str = '60s') -> pd.DataFrame:
+        """
+        [新增] 轨迹重采样：将不规则的 GPS 点位规整为固定时间间隔。
+        这对 HMM 模型至关重要。
+        """
         df = df.copy()
-        # 1. 时间处理
         df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.set_index("timestamp")
+        
+        resampled_list = []
+        
+        # 按个体分组进行重采样
+        for ind_id, group in df.groupby("individual-local-identifier"):
+            # 1. 重采样并对经纬度进行线性插值
+            # dropna() 是为了去除那些由于时间间隔过大导致的纯空行，
+            # 实际科研中可能需要设定 max_gap 来截断轨迹，这里做简化处理。
+            g_resampled = group[["location-lat", "location-long"]].resample(time_step).mean().interpolate(method='linear').dropna()
+            
+            # 补全 ID 信息
+            g_resampled["individual-local-identifier"] = ind_id
+            resampled_list.append(g_resampled)
+            
+        # 还原索引
+        if not resampled_list:
+            return df # 如果列表为空，返回原数据（或报错）
+            
+        df_resampled = pd.concat(resampled_list).reset_index()
+        return df_resampled
+
+    def preprocess(self, df: pd.DataFrame, do_resample: bool = True) -> pd.DataFrame:
+        """执行完整的数据清洗管道"""
+        # 1. 基础清洗
+        df = df.dropna(subset=["location-lat", "location-long", "timestamp"])
+        
+        # 2. [关键修改] 重采样，确保 HMM 时间步长一致
+        if do_resample:
+            print("正在对轨迹进行重采样 (Interval: 60s)...")
+            df = self.resample_tracks(df, time_step='60s')
+        
+        # 3. 排序
         df = df.sort_values(["individual-local-identifier", "timestamp"]).reset_index(drop=True)
         
-        # 2. 计算时空差分 (Groupby individual)
-        # 注意：这里处理了边界条件，确保不会跨个体计算差分
+        # 4. 计算时空差分 (Groupby individual)
         grouper = df.groupby("individual-local-identifier")
-        df["dt"] = grouper["timestamp"].diff().dt.total_seconds()
         
-        # Shift 操作获取下一个点坐标，用于计算当前段距离
+        # 计算当前点与下一点的距离和时间差
+        # 使用 shift(-1) 向前看一个点
         next_lat = grouper["location-lat"].shift(-1)
         next_lon = grouper["location-long"].shift(-1)
+        next_time = grouper["timestamp"].shift(-1)
         
         df["dist"] = self.haversine_distance(
             df["location-lat"], df["location-long"],
             next_lat, next_lon
         )
         
-        # 3. 计算速度 & 清洗异常值
-        df = df[df["dt"] > 0]  # 移除重复时间戳
+        df["dt"] = (next_time - df["timestamp"]).dt.total_seconds()
+        
+        # 5. 计算速度 & 清洗异常值
+        df = df[df["dt"] > 0]  # 移除重复或无效时间戳
         df["speed"] = df["dist"] / df["dt"]
         
-        # 4. 对数变换 (用于 HMM)
-        df["log_speed"] = np.log(df["speed"] + 1e-3)
+        # 6. 对数变换 (用于 HMM，增加数值稳定性)
+        # speed + 0.1 避免 log(0)
+        df["log_speed"] = np.log(df["speed"] + 0.1)
         
         return df.dropna()
-
-# src/models.py
-from hmmlearn.hmm import GaussianHMM
-import joblib
-
-class MovementHMM:
-    """运动状态识别 HMM 模型封装"""
-    
-    def __init__(self, n_components: int = 2, n_iter: int = 200, random_state: int = 42):
-        self.model = GaussianHMM(
-            n_components=n_components, 
-            covariance_type="diag", 
-            n_iter=n_iter, 
-            random_state=random_state
-        )
-        self.is_fitted = False
-        self.flight_state_idx = None
-
-    def fit(self, X: np.ndarray, lengths: list):
-        """训练模型"""
-        self.model.fit(X, lengths)
-        self.is_fitted = True
-        # 自动识别哪个状态对应"飞行" (均值较大的那个)
-        self.flight_state_idx = np.argmax(self.model.means_.flatten())
-        print(f"Training Complete. Flight State Index: {self.flight_state_idx}")
-        print(f"State Means: {self.model.means_.flatten()}")
-
-    def predict(self, X: np.ndarray, lengths: list) -> np.ndarray:
-        """预测状态序列"""
-        if not self.is_fitted:
-            raise ValueError("Model not fitted yet.")
-        return self.model.predict(X, lengths)
-
-    def save(self, path: str):
-        joblib.dump(self.model, path)
-    
-    def load(self, path: str):
-        self.model = joblib.load(path)
-        self.is_fitted = True
