@@ -4,54 +4,72 @@ import numpy as np
 import joblib
 
 class MovementHMM:
-    """运动状态识别 HMM 模型封装"""
-    
-    def __init__(self, n_components: int = 2, n_iter: int = 200, random_state: int = 42):
+    def __init__(self, n_components: int = 3, n_iter: int = 100, random_state: int = 42):
+        self.n_components = n_components
         self.model = GaussianHMM(
             n_components=n_components, 
             covariance_type="diag", 
             n_iter=n_iter, 
             random_state=random_state,
-            verbose=False
+            verbose=False,
+            # 初始化时只随机生成 s(startprob) 和 t(transmat)
+            # m(means) 和 c(covars) 稍后手动指定
+            init_params="st"
         )
         self.is_fitted = False
-        self.flight_state_idx = None # 内部记录哪个 ID 是飞行
+        self.flight_state_idx = None
 
     def fit(self, X: np.ndarray, lengths: list):
-        """训练模型并自动识别飞行状态"""
+        """
+        训练模型。对于 3 状态模型，强制锁定均值以对抗数据不平衡。
+        """
+        if self.n_components == 3:
+            print(">>>启用物理约束模式：锁定均值 (Freezing Means) <<<")
+            
+            # 1. 设定物理意义明确的均值 (Log Scale)
+            # Rest: exp(-4) ~ 0.02 m/s
+            # Forage: exp(0.5) ~ 1.65 m/s
+            # Flight: exp(2.5) ~ 12.2 m/s
+            self.model.means_ = np.array([[-4.0], [0.5], [2.5]])
+            
+            # 2. 设定初始方差 (允许模型微调方差)
+            self.model.covars_ = np.array([[0.5], [1.0], [1.0]])
+            
+            # 3. [关键一步] 设置 params = "stc"
+            # 去掉 'm'，告诉算法在 EM 迭代中不要更新 means_，强制保持我们设定的值
+            self.model.params = "stc"
+            
+        else:
+            # 普通模式：全参数更新
+            self.model.init_params = "stmc"
+            self.model.params = "stmc"
+
+        # 训练
         self.model.fit(X, lengths)
         self.is_fitted = True
         
-        # 自动识别逻辑：速度均值较大的那个状态定义为“飞行”
-        # model.means_ 形状为 (n_components, n_features)
+        # 结果分析
         means = self.model.means_.flatten()
         self.flight_state_idx = np.argmax(means)
         
-        print(f"HMM Training Complete.")
-        print(f" - State 0 Mean Log-Speed: {means[0]:.2f}")
-        print(f" - State 1 Mean Log-Speed: {means[1]:.2f}")
+        print(f"HMM Training Complete (n={self.n_components}).")
+        
+        labels = ["Low (Rest)", "Mid (Forage)", "High (Flight)"]
+        sorted_indices = np.argsort(means)
+        
+        for i, state_idx in enumerate(sorted_indices):
+            mean_log = means[state_idx]
+            mean_speed = np.exp(mean_log)
+            # 如果是 3 状态，尝试匹配我们预设的标签
+            label = labels[i] if self.n_components == 3 else f"State {state_idx}"
+            print(f" - State {state_idx} [{label}]: Mean Log-Speed = {mean_log:.2f} (Speed ≈ {mean_speed:.2f} m/s)")
+            
         print(f" - Identified Flight State Index: {self.flight_state_idx}")
 
     def predict(self, X: np.ndarray, lengths: list) -> np.ndarray:
-        """
-        预测状态序列。
-        返回: 0=Rest, 1=Flight (已自动对齐语义)
-        """
         if not self.is_fitted:
             raise ValueError("Model not fitted yet.")
-            
-        raw_states = self.model.predict(X, lengths)
-        
-        # 如果模型内部认为 0 是飞行，我们需要把它反转成 1，或者保持原样
-        # 目标：输出 1 为飞行，0 为非飞行
-        if self.flight_state_idx == 1:
-            return raw_states # 内部 1 就是飞行，直接返回
-        else:
-            return 1 - raw_states # 内部 0 是飞行，所以用 1-0 得到 1
+        return self.model.predict(X, lengths)
 
     def save(self, path: str):
         joblib.dump(self.model, path)
-    
-    def load(self, path: str):
-        self.model = joblib.load(path)
-        self.is_fitted = True

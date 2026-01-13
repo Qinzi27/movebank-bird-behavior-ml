@@ -76,13 +76,14 @@ class TrajectoryProcessor:
         )
         
         df["dt"] = (next_time - df["timestamp"]).dt.total_seconds()
-        
         # 5. 计算速度 & 清洗异常值
-        df = df[df["dt"] > 0]  # 移除重复或无效时间戳
+        # [修改] 增加 .copy() 解决 SettingWithCopyWarning
+        df = df[df["dt"] > 0].copy()  
         df["speed"] = df["dist"] / df["dt"]
         
-        # 6. 对数变换 (用于 HMM，增加数值稳定性)
-        # speed + 1e-3 避免 log(0)
+        # 6. 对数变换
+    
         df["log_speed"] = np.log(df["speed"] + 1e-3)
+
         
         return df.dropna()

@@ -1,8 +1,15 @@
 import pandas as pd
 import numpy as np
-from src.features import TrajectoryProcessor
-from src.models import MovementHMM
 import matplotlib.pyplot as plt
+
+# Allow running both as `python -m src.main` (package) and `python src/main.py` (script)
+try:
+    from src.features import TrajectoryProcessor
+    from src.models import MovementHMM
+except ModuleNotFoundError:
+    # When executed as a script, `src/` is on sys.path, so import local modules directly
+    from features import TrajectoryProcessor
+    from models import MovementHMM
 
 def main():
     # 1. 配置路径
